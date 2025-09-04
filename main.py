@@ -22,12 +22,10 @@ if sys.platform.startswith('win'):
 
 try:
     from dlsite_async import PlayAPI, EbookSession
-    import dlsite_async
-    print(f"使用 dlsite-async 版本: {getattr(dlsite_async, '__version__', '未知版本')}")
 except ImportError:
-    print("错误：请先安装依赖库")
-    print("运行命令：pip install -r requirements.txt")
-    print("如果还有问题，请尝试：pip install git+https://github.com/bhrevol/dlsite-async.git")
+    print("错误：请先安装依赖库", flush=True)
+    print("运行命令：pip install -r requirements.txt", flush=True)
+    print("如果还有问题，请尝试：pip install git+https://github.com/bhrevol/dlsite-async.git", flush=True)
     sys.exit(1)
 
 
@@ -58,8 +56,8 @@ class DLsiteDownloader:
         file_handler = logging.FileHandler('dlsite_downloader.log', encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         
-        # 创建控制台处理器（仅显示重要信息）
-        console_handler = logging.StreamHandler()
+        # 创建控制台处理器（立即输出）
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         
         # 创建格式化器
@@ -76,48 +74,72 @@ class DLsiteDownloader:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
         
-        print("日志系统已启用，详细信息保存到 dlsite_downloader.log")
+        # 强制刷新输出
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.stream.flush()
+        
+        self.user_info("日志系统已启用，详细信息保存到 dlsite_downloader.log")
+    
+    def user_info(self, message):
+        """用户信息输出，立即显示并记录日志"""
+        self.logger.info(message)
+        # 强制刷新所有StreamHandler
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.stream.flush()
+    
+    def user_error(self, message):
+        """用户错误信息输出，立即显示并记录日志"""
+        self.logger.error(message)
+        # 强制刷新所有StreamHandler
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.stream.flush()
+    
+    def user_debug(self, message):
+        """调试信息输出，仅记录到文件"""
+        self.logger.debug(message)
     
     def detect_and_setup_proxy(self) -> None:
         """检测并设置系统代理"""
         try:
-            print("检测系统代理设置...")
+            self.user_info("检测系统代理设置...")
             
             # 检测 Windows 系统代理
             proxy_info = self.get_windows_proxy()
             
             if proxy_info:
                 proxy_url, proxy_description = proxy_info
-                print(f"检测到系统代理：{proxy_description}")
+                self.user_info(f"检测到系统代理：{proxy_description}")
                 
                 # 测试代理连接
                 if self.test_proxy_connection(proxy_url):
                     self.proxy_config = proxy_url
-                    print(f"将使用代理：{proxy_url}")
                     self.logger.info(f"检测到系统代理并测试通过：{proxy_url}")
                 else:
-                    print(f"代理连接测试失败，将尝试直连")
+                    self.user_info(f"代理连接测试失败，将尝试直连")
                     self.logger.warning(f"代理连接测试失败：{proxy_url}")
                     self.proxy_config = None
             else:
                 # 尝试通过环境变量检测代理
                 env_proxy = self.get_env_proxy()
                 if env_proxy:
-                    print(f"检测到环境变量代理：{env_proxy}")
+                    self.user_info(f"检测到环境变量代理：{env_proxy}")
                     if self.test_proxy_connection(env_proxy):
                         self.proxy_config = env_proxy
-                        print(f"将使用环境变量代理：{env_proxy}")
+                        self.user_info(f"将使用环境变量代理：{env_proxy}")
                         self.logger.info(f"使用环境变量代理并测试通过：{env_proxy}")
                     else:
-                        print(f"环境变量代理连接测试失败，将尝试直连")
+                        self.user_info(f"环境变量代理连接测试失败，将尝试直连")
                         self.logger.warning(f"环境变量代理连接测试失败：{env_proxy}")
                         self.proxy_config = None
                 else:
-                    print("未检测到系统代理设置")
+                    self.user_info("未检测到系统代理设置")
                     self.logger.info("未检测到系统代理")
                     
         except Exception as e:
-            print(f"代理检测出错：{str(e)}")
+            self.user_error(f"代理检测出错：{str(e)}")
             self.logger.warning(f"代理检测失败：{str(e)}")
             self.proxy_config = None
     
@@ -297,7 +319,7 @@ class DLsiteDownloader:
                     "password": password,
                     "last_login": asyncio.get_event_loop().time()
                 }
-                print("账号密码已保存")
+                self.user_info("账号密码已保存")
             
             # 更新会话信息
             if save_session and self.play_api and hasattr(self.play_api, 'session'):
@@ -323,15 +345,15 @@ class DLsiteDownloader:
                 # 保存时间戳
                 session_data['timestamp'] = asyncio.get_event_loop().time()
                 user_data["session"] = session_data
-                print("会话信息已保存")
+                self.user_info("会话信息已保存")
             
             # 保存到文件
             with open(self.user_data_file, 'w', encoding='utf-8') as f:
                 json.dump(user_data, f, indent=2, ensure_ascii=False)
-            print(f"用户数据已保存到 {self.user_data_file}")
+            self.user_info(f"用户数据已保存到 {self.user_data_file}")
             
         except Exception as e:
-            print(f"保存用户数据失败：{str(e)}")
+            self.user_error(f"保存用户数据失败：{str(e)}")
     
     def load_user_data(self) -> Optional[Dict]:
         """从本地文件加载用户数据"""
@@ -341,14 +363,14 @@ class DLsiteDownloader:
                     user_data = json.load(f)
                 return user_data
         except Exception as e:
-            print(f"加载用户数据失败：{str(e)}")
+            self.user_debug(f"加载用户数据失败：{str(e)}")
         return None
     
     def load_credentials(self) -> Optional[Dict[str, str]]:
         """从用户数据中加载凭据"""
         user_data = self.load_user_data()
         if user_data and "credentials" in user_data:
-            print(f"从 {self.user_data_file} 加载已保存的凭据")
+            self.user_debug(f"从 {self.user_data_file} 加载已保存的凭据")
             return user_data["credentials"]
         return None
     
@@ -362,17 +384,17 @@ class DLsiteDownloader:
                 # 检查会话是否过期（7天）
                 current_time = asyncio.get_event_loop().time()
                 if current_time - session_data.get('timestamp', 0) > 7 * 24 * 3600:
-                    print("会话已过期，需要重新登录")
+                    self.user_info("会话已过期，需要重新登录")
                     # 删除过期的session数据
                     user_data.pop("session", None)
                     with open(self.user_data_file, 'w', encoding='utf-8') as f:
                         json.dump(user_data, f, indent=2, ensure_ascii=False)
                     return False
                 
-                print(f"从 {self.user_data_file} 加载会话信息")
+                self.user_debug(f"从 {self.user_data_file} 加载会话信息")
                 return True
         except Exception as e:
-            print(f"加载会话失败：{str(e)}")
+            self.user_debug(f"加载会话失败：{str(e)}")
         return False
     
     def clear_saved_data(self, clear_credentials: bool = True, clear_session: bool = True) -> None:
@@ -410,28 +432,28 @@ class DLsiteDownloader:
         
     async def login(self) -> bool:
         """用户登录功能"""
-        print("=" * 50)
-        print("欢迎使用 DLsite 下载器")
-        print("=" * 50)
+        self.user_info("=" * 50)
+        self.user_info("欢迎使用 DLsite 下载器")
+        self.user_info("=" * 50)
         
         # 尝试加载已保存的凭据
         saved_credentials = self.load_credentials()
         if saved_credentials:
-            print("检测到已保存的登录信息，尝试自动登录...")
+            self.user_info("检测到已保存的登录信息，尝试自动登录...")
             username = saved_credentials.get('username')
             password = saved_credentials.get('password')
             
             if username and password:
                 try:
-                    print("正在使用保存的凭据登录...")
+                    self.user_info("正在使用保存的凭据登录...")
                     self.play_api = self.create_play_api()
                     await self.play_api.login(username, password)
-                    print("自动登录成功！")
+                    self.user_info("自动登录成功！")
                     # 保存新的会话信息（保持原有的凭据）
                     self.save_user_data(save_session=True)
                     return True
                 except Exception as e:
-                    print(f"自动登录失败：{str(e)}")
+                    self.user_error(f"自动登录失败：{str(e)}")
                     print("将尝试手动登录...")
                     # 清除可能无效的凭据
                     self.clear_saved_data()
@@ -481,7 +503,7 @@ class DLsiteDownloader:
     
     async def get_purchased_books(self) -> List:
         """获取用户购买的图书类作品"""
-        print("\n正在获取您购买的作品...")
+        self.user_info("\n正在获取您购买的作品...")
         
         try:
             # 获取所有购买记录
@@ -495,7 +517,7 @@ class DLsiteDownloader:
                 if work.work_type in ["MNG", "BOOK"]
             ]
             
-            print(f"找到 {len(self.book_works)} 个图书类作品")
+            self.user_info(f"找到 {len(self.book_works)} 个图书类作品")
             return self.book_works
             
         except Exception as e:
