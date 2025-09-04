@@ -126,10 +126,14 @@ jobs:
             --hidden-import=urllib.request `
             --hidden-import=urllib.parse `
             --hidden-import=getpass `
+            --hidden-import=io `
+            --hidden-import=encodings `
+            --hidden-import=encodings.utf_8 `
             --collect-all=dlsite_async `
             --collect-all=aiofiles `
             --collect-all=PIL `
             --collect-all=cryptography `
+            --collect-all=encodings `
             main.py
           Write-Host "构建完成"
         env:
@@ -223,7 +227,7 @@ jobs:
           files: |
             dist/dlsite_downloader.exe
             README.md
-          name: "DLsite下载器 ${{ steps.version.outputs.version }}"
+          name: "${{ steps.version.outputs.version }}"
           tag_name: "${{ steps.version.outputs.version }}"
           body: |
             ### 🎯 版本信息
