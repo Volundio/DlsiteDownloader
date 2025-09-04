@@ -37,8 +37,7 @@ class DLsiteDownloader:
     def __init__(self):
         self.play_api = None
         self.book_works = []
-        self.session_file = "dlsite_session.json"
-        self.credentials_file = "dlsite_credentials.json"
+        self.user_data_file = "dlsite_user_data.json"  # 合并的用户数据文件
         self.filtered_works = []  # 用于搜索过滤后的作品
         self.search_mode = False  # 是否处于搜索模式
         self.proxy_config = None  # 存储代理配置
@@ -284,36 +283,24 @@ class DLsiteDownloader:
             self.logger.warning(f"创建 PlayAPI 失败，使用默认配置：{str(e)}")
             return PlayAPI()
     
-    def save_credentials(self, username: str, password: str) -> None:
-        """保存用户凭据到本地文件（明文）"""
+    def save_user_data(self, save_credentials: bool = False, save_session: bool = False, 
+                      username: str = None, password: str = None) -> None:
+        """保存用户数据到本地文件"""
         try:
-            credentials = {
-                "username": username,
-                "password": password,
-                "last_login": asyncio.get_event_loop().time()
-            }
-            with open(self.credentials_file, 'w', encoding='utf-8') as f:
-                json.dump(credentials, f, indent=2, ensure_ascii=False)
-            print(f"凭据已保存到 {self.credentials_file}")
-        except Exception as e:
-            print(f"保存凭据失败：{str(e)}")
-    
-    def load_credentials(self) -> Optional[Dict[str, str]]:
-        """从本地文件加载用户凭据"""
-        try:
-            if os.path.exists(self.credentials_file):
-                with open(self.credentials_file, 'r', encoding='utf-8') as f:
-                    credentials = json.load(f)
-                print(f"从 {self.credentials_file} 加载已保存的凭据")
-                return credentials
-        except Exception as e:
-            print(f"加载凭据失败：{str(e)}")
-        return None
-    
-    def save_session(self) -> None:
-        """保存登录会话信息"""
-        try:
-            if self.play_api and hasattr(self.play_api, 'session'):
+            # 加载现有数据
+            user_data = self.load_user_data() or {}
+            
+            # 更新凭据信息
+            if save_credentials and username and password:
+                user_data["credentials"] = {
+                    "username": username,
+                    "password": password,
+                    "last_login": asyncio.get_event_loop().time()
+                }
+                print("账号密码已保存")
+            
+            # 更新会话信息
+            if save_session and self.play_api and hasattr(self.play_api, 'session'):
                 session_data = {}
                 
                 # 保存 cookies
@@ -335,42 +322,89 @@ class DLsiteDownloader:
                 
                 # 保存时间戳
                 session_data['timestamp'] = asyncio.get_event_loop().time()
-                
-                with open(self.session_file, 'w', encoding='utf-8') as f:
-                    json.dump(session_data, f, indent=2, ensure_ascii=False)
-                print(f"会话已保存到 {self.session_file}")
+                user_data["session"] = session_data
+                print("会话信息已保存")
+            
+            # 保存到文件
+            with open(self.user_data_file, 'w', encoding='utf-8') as f:
+                json.dump(user_data, f, indent=2, ensure_ascii=False)
+            print(f"用户数据已保存到 {self.user_data_file}")
+            
         except Exception as e:
-            print(f"保存会话失败：{str(e)}")
+            print(f"保存用户数据失败：{str(e)}")
+    
+    def load_user_data(self) -> Optional[Dict]:
+        """从本地文件加载用户数据"""
+        try:
+            if os.path.exists(self.user_data_file):
+                with open(self.user_data_file, 'r', encoding='utf-8') as f:
+                    user_data = json.load(f)
+                return user_data
+        except Exception as e:
+            print(f"加载用户数据失败：{str(e)}")
+        return None
+    
+    def load_credentials(self) -> Optional[Dict[str, str]]:
+        """从用户数据中加载凭据"""
+        user_data = self.load_user_data()
+        if user_data and "credentials" in user_data:
+            print(f"从 {self.user_data_file} 加载已保存的凭据")
+            return user_data["credentials"]
+        return None
     
     def load_session(self) -> bool:
         """加载已保存的会话信息"""
         try:
-            if os.path.exists(self.session_file):
-                with open(self.session_file, 'r', encoding='utf-8') as f:
-                    session_data = json.load(f)
+            user_data = self.load_user_data()
+            if user_data and "session" in user_data:
+                session_data = user_data["session"]
                 
                 # 检查会话是否过期（7天）
                 current_time = asyncio.get_event_loop().time()
                 if current_time - session_data.get('timestamp', 0) > 7 * 24 * 3600:
                     print("会话已过期，需要重新登录")
-                    os.remove(self.session_file)
+                    # 删除过期的session数据
+                    user_data.pop("session", None)
+                    with open(self.user_data_file, 'w', encoding='utf-8') as f:
+                        json.dump(user_data, f, indent=2, ensure_ascii=False)
                     return False
                 
-                print(f"从 {self.session_file} 加载会话信息")
+                print(f"从 {self.user_data_file} 加载会话信息")
                 return True
         except Exception as e:
             print(f"加载会话失败：{str(e)}")
         return False
     
-    def clear_saved_data(self) -> None:
+    def clear_saved_data(self, clear_credentials: bool = True, clear_session: bool = True) -> None:
         """清除保存的凭据和会话信息"""
         try:
-            if os.path.exists(self.credentials_file):
-                os.remove(self.credentials_file)
-                print(f"已删除 {self.credentials_file}")
-            if os.path.exists(self.session_file):
-                os.remove(self.session_file)
-                print(f"已删除 {self.session_file}")
+            if os.path.exists(self.user_data_file):
+                user_data = self.load_user_data() or {}
+                
+                if clear_credentials and "credentials" in user_data:
+                    user_data.pop("credentials", None)
+                    print("已清除保存的账号密码")
+                
+                if clear_session and "session" in user_data:
+                    user_data.pop("session", None)
+                    print("已清除保存的会话信息")
+                
+                if not user_data:
+                    # 如果文件为空，直接删除
+                    os.remove(self.user_data_file)
+                    print(f"已删除 {self.user_data_file}")
+                else:
+                    # 否则保存剩余数据
+                    with open(self.user_data_file, 'w', encoding='utf-8') as f:
+                        json.dump(user_data, f, indent=2, ensure_ascii=False)
+                    print(f"已更新 {self.user_data_file}")
+            
+            # 兼容性：清理旧文件
+            for old_file in ["dlsite_credentials.json", "dlsite_session.json"]:
+                if os.path.exists(old_file):
+                    os.remove(old_file)
+                    print(f"已删除旧文件：{old_file}")
+                    
         except Exception as e:
             print(f"清除数据失败：{str(e)}")
         
@@ -393,7 +427,8 @@ class DLsiteDownloader:
                     self.play_api = self.create_play_api()
                     await self.play_api.login(username, password)
                     print("自动登录成功！")
-                    self.save_session()  # 保存新的会话信息
+                    # 保存新的会话信息（保持原有的凭据）
+                    self.save_user_data(save_session=True)
                     return True
                 except Exception as e:
                     print(f"自动登录失败：{str(e)}")
@@ -423,14 +458,20 @@ class DLsiteDownloader:
             await self.play_api.login(username, password)
             print("登录成功！")
             
-            # 询问是否保存凭据
-            save_choice = input("是否保存登录信息以便下次自动登录？(y/n)：").strip().lower()
-            if save_choice in ['y', 'yes', '是']:
-                self.save_credentials(username, password)
-                self.save_session()
-                print("登录信息已保存")
+            # 分别询问是否保存凭据和会话
+            print("\n请选择要保存的信息：")
+            save_credentials = input("是否保存账号密码以便下次自动登录？(y/n)：").strip().lower() in ['y', 'yes', '是']
+            save_session = input("是否保存会话信息以减少登录频率？(y/n)：").strip().lower() in ['y', 'yes', '是']
+            
+            if save_credentials or save_session:
+                self.save_user_data(
+                    save_credentials=save_credentials,
+                    save_session=save_session,
+                    username=username if save_credentials else None,
+                    password=password if save_credentials else None
+                )
             else:
-                print("登录信息未保存，下次需要重新输入")
+                print("未保存任何登录信息，下次需要重新输入")
             
             return True
             
@@ -491,8 +532,15 @@ class DLsiteDownloader:
             print(f"您购买的图书类作品 (第 {page}/{total_pages} 页，共 {total_works} 部)")
         print("=" * 80)
         print("提示：程序会自动尝试下载所有可用文件")
-        if os.path.exists(self.credentials_file):
-            print("已保存登录信息，下次启动将自动登录")
+        user_data = self.load_user_data()
+        if user_data:
+            info_parts = []
+            if "credentials" in user_data:
+                info_parts.append("账号密码")
+            if "session" in user_data:
+                info_parts.append("会话信息")
+            if info_parts:
+                print(f"已保存{' 和 '.join(info_parts)}，下次启动将自动登录")
         print("=" * 80)
         
         for i, (work, release_date) in enumerate(current_page_works):
@@ -552,7 +600,9 @@ class DLsiteDownloader:
                 print(f"\n请选择操作：")
                 print(f"  输入作品序号 (1-{len(self.book_works)}) 下载作品")
                 print(f"  输入 0 退出程序")
-                print(f"  输入 'clear' 清除保存的登录信息")
+                print(f"  输入 'clear' 清除所有保存的登录信息")
+                print(f"  输入 'clear credentials' 仅清除账号密码")
+                print(f"  输入 'clear session' 仅清除会话信息")
                 print(f"  输入 'search 关键词' 搜索作品")
                 if self.search_mode:
                     print(f"  输入 'reset' 退出搜索模式")
@@ -564,7 +614,12 @@ class DLsiteDownloader:
                     return ("exit", 0)
                 elif choice == 'clear':
                     self.clear_saved_data()
-                    print("已清除保存的登录信息")
+                    continue
+                elif choice == 'clear credentials':
+                    self.clear_saved_data(clear_credentials=True, clear_session=False)
+                    continue
+                elif choice == 'clear session':
+                    self.clear_saved_data(clear_credentials=False, clear_session=True)
                     continue
                 elif choice == 'reset' and self.search_mode:
                     return ("reset_search", 0)
