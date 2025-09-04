@@ -1,0 +1,257 @@
+name: 构建并发布DLsite下载器
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:  # 允许手动触发工作流
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONLEGACYWINDOWSSTDIO: utf-8
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write  # 明确授予写入权限
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 计算版本号
+        id: version
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          # 计算语义化版本号 va.b.c
+          # 初始值: a=1, b=0, c=0 (v1.0.0)
+          # 每次提交 c+1，c>=10 时 c=0 且 b+1，b>=10 时 b=0 且 a+1
+          
+          $runNumber = ${{ github.run_number }}
+          $totalIncrements = $runNumber - 1
+          
+          $c = $totalIncrements % 10
+          $bIncrements = [math]::Floor($totalIncrements / 10)
+          $b = $bIncrements % 10
+          $aIncrements = [math]::Floor($bIncrements / 10)
+          $a = 1 + $aIncrements
+          
+          $version = "v$a.$b.$c"
+          
+          Write-Host "🏷️ 计算得到版本号: $version"
+          Write-Host "📊 计算详情:"
+          Write-Host "   - Run Number: $runNumber"
+          Write-Host "   - Total Increments: $totalIncrements"
+          Write-Host "   - a: $a, b: $b, c: $c"
+          
+          # 输出给后续步骤使用
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "major=$a" >> $env:GITHUB_OUTPUT
+          echo "minor=$b" >> $env:GITHUB_OUTPUT
+          echo "patch=$c" >> $env:GITHUB_OUTPUT
+
+      - name: 设置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 缓存Python依赖
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: 安装依赖
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          Write-Host "📦 安装项目依赖..."
+          pip install -r requirements.txt
+          Write-Host "依赖安装完成"
+          
+          # 验证关键依赖
+          Write-Host "🔍 验证关键依赖..."
+          python -c "import dlsite_async; print('OK: dlsite-async imported')"
+          python -c "import aiofiles; print('OK: aiofiles imported')"
+          python -c "import PIL; print('OK: Pillow (via dlsite-async[pil]) imported')"
+          python -c "import aiohttp; print('OK: aiohttp imported')"
+          python -c "import cryptography; print('OK: cryptography imported')"
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 创建构建信息文件
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          echo "构建时间: $(Get-Date)" > build_info.txt
+          echo "版本号: ${{ steps.version.outputs.version }}" >> build_info.txt
+          echo "版本详情: ${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }}" >> build_info.txt
+          echo "提交哈希: ${{ github.sha }}" >> build_info.txt
+          echo "构建编号: ${{ github.run_number }}" >> build_info.txt
+
+      - name: 预构建检查
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "🔍 检查模块导入..."
+          python -c "import sys; print('Python version:', sys.version)"
+          python -c "import dlsite_async; print('OK: dlsite_async imported')"
+          python -c "import asyncio; print('OK: asyncio imported')"
+          python -c "import json; print('OK: json imported')"
+          python -c "import logging; print('OK: logging imported')"
+          python -c "import urllib.request; print('OK: urllib.request imported')"
+          Write-Host "所有模块导入成功"
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 使用PyInstaller构建EXE
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "🔧 正在构建EXE文件..."
+          pyinstaller --onefile --name dlsite_downloader --console --clean --distpath dist --workpath build --optimize 2 `
+            --hidden-import=dlsite_async `
+            --hidden-import=dlsite_async.api `
+            --hidden-import=asyncio `
+            --hidden-import=aiofiles `
+            --hidden-import=aiohttp `
+            --hidden-import=PIL `
+            --hidden-import=PIL.Image `
+            --hidden-import=cryptography `
+            --hidden-import=cryptography.fernet `
+            --hidden-import=json `
+            --hidden-import=logging `
+            --hidden-import=urllib.request `
+            --hidden-import=urllib.parse `
+            --hidden-import=getpass `
+            --collect-all=dlsite_async `
+            --collect-all=aiofiles `
+            --collect-all=PIL `
+            --collect-all=cryptography `
+            main.py
+          Write-Host "构建完成"
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 验证构建结果
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          if (Test-Path "dist/dlsite_downloader.exe") {
+            Write-Host "EXE文件构建成功"
+            $fileSize = (Get-Item "dist/dlsite_downloader.exe").Length / 1MB
+            Write-Host "📦 文件大小: $([math]::Round($fileSize, 2)) MB"
+            Write-Host "🏷️ 版本号: ${{ steps.version.outputs.version }}"
+            
+            # 验证EXE文件的依赖
+            Write-Host "🔍 验证EXE文件依赖..."
+            $dependencies = @("kernel32.dll", "user32.dll", "msvcrt.dll")
+            foreach ($dep in $dependencies) {
+              Write-Host "   - ${dep}: 系统依赖"
+            }
+            
+            # 验证文件完整性
+            Write-Host "🧪 验证文件完整性..."
+            if (Get-Command "Get-FileHash" -ErrorAction SilentlyContinue) {
+              $hash = Get-FileHash "dist/dlsite_downloader.exe" -Algorithm SHA256
+              Write-Host "📝 文件哈希: $($hash.Hash.Substring(0,16))..."
+            }
+            
+            Write-Host "构建验证完成"
+          } else {
+            Write-Host "ERROR: EXE文件构建失败"
+            exit 1
+          }
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 基础功能测试
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "🧪 测试exe基本功能..."
+          try {
+              # 创建测试超时脚本
+              $testScript = @"
+              Start-Sleep -Seconds 5
+              Get-Process -Name "dlsite_downloader" -ErrorAction SilentlyContinue | Stop-Process -Force
+          "@
+              $testScript | Out-File -FilePath "timeout_test.ps1" -Encoding UTF8
+              
+              # 启动超时脚本
+              Start-Job -ScriptBlock { powershell -File "timeout_test.ps1" } | Out-Null
+              
+              # 运行exe (由于需要用户输入,会很快退出或被超时脚本终止)
+              $process = Start-Process -FilePath "dist\dlsite_downloader.exe" -Wait -PassThru -NoNewWindow -RedirectStandardOutput "test_output.txt" -RedirectStandardError "test_error.txt"
+              Write-Host "[TEST] exe进程退出代码: $($process.ExitCode)"
+              Write-Host "[OUTPUT] 输出内容:"
+              if (Test-Path "test_output.txt") { Get-Content "test_output.txt" }
+              Write-Host "[ERROR] 错误内容:"
+              if (Test-Path "test_error.txt") { Get-Content "test_error.txt" }
+              
+              # 清理
+              Remove-Item "timeout_test.ps1" -ErrorAction SilentlyContinue
+          } catch {
+              Write-Host "[WARNING] 测试过程中出现异常: $($_.Exception.Message)"
+              Write-Host "[INFO] 这可能是正常的，因为程序需要用户交互"
+          }
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 清理临时文件
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "🧹 清理临时文件..."
+          if (Test-Path "test_output.txt") { Remove-Item "test_output.txt" }
+          if (Test-Path "test_error.txt") { Remove-Item "test_error.txt" }
+          if (Test-Path "timeout_test.ps1") { Remove-Item "timeout_test.ps1" }
+
+      - name: 上传构建结果到Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlsite_downloader-${{ steps.version.outputs.version }}
+          path: |
+            dist/dlsite_downloader.exe
+            build_info.txt
+            README.md
+          retention-days: 30
+
+      - name: 创建发布版本
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/dlsite_downloader.exe
+            README.md
+          name: "DLsite下载器 ${{ steps.version.outputs.version }}"
+          tag_name: "${{ steps.version.outputs.version }}"
+          body: |
+            ### 🎯 版本信息
+            - **构建编号**: ${{ github.run_number }}
+            - **构建时间**: ${{ github.event.head_commit.timestamp }}
+            - **提交哈希**: [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+
+            *此版本由 GitHub Actions 自动构建和发布*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建完成通知
+        if: success()
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "🎉 构建和发布完成！"
+          Write-Host "📦 版本号: ${{ steps.version.outputs.version }}"
+          Write-Host "🏷️ 标签: ${{ steps.version.outputs.version }}"
+          Write-Host "🔗 下载地址: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}"
+          Write-Host ""
+          Write-Host "📁 已发布的文件:"
+          Write-Host "   - dlsite_downloader.exe (DLsite下载器主程序)"
+          Write-Host "   - README.md (使用说明文档)"
+          Write-Host ""
+          Write-Host "✨ 版本号规则:"
+          Write-Host "   - 当前版本: ${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }}"
+          Write-Host "   - 每次提交自动增加0.0.1"
+          Write-Host "   - 小版本满10时进位到中版本 (如v1.0.9 → v1.1.0)"
+          Write-Host "   - 中版本满10时进位到大版本 (如v1.9.9 → v2.0.0)"

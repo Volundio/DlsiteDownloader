@@ -1,0 +1,184 @@
+# ================================
+# Python 相关
+# ================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# ================================
+# 虚拟环境
+# ================================
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ================================
+# IDE 和编辑器
+# ================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ================================
+# 操作系统文件
+# ================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ================================
+# 敏感数据和认证信息（绝对不能上传）
+# ================================
+# 登录凭据和会话文件
+dlsite_credentials.json
+dlsite_session.json
+dlsite_session.txt
+*_credentials.json
+*_session.json
+*_session.txt
+
+# 配置文件中可能包含敏感信息
+config.ini
+config.json
+settings.json
+.env.*
+
+# ================================
+# 下载内容和生成文件
+# ================================
+# 下载目录（包含版权内容，不应上传）
+downloads/
+download/
+output/
+temp/
+tmp/
+cache/
+
+# 解密后的图片
+decrypted_images/
+**/decrypted_images/
+
+# 各种图片格式
+*.webp
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.svg
+
+# 音频和视频文件
+*.mp3
+*.wav
+*.flac
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# 压缩文件
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.bz2
+
+# ================================
+# 日志和调试文件
+# ================================
+*.log
+logs/
+debug.log
+error.log
+dlsite_downloader.log
+*_debug.txt
+*_error.txt
+
+# ================================
+# 临时文件和备份
+# ================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+.#*
+#*#
+
+# ================================
+# 数据库文件
+# ================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ================================
+# 其他项目特定文件
+# ================================
+# 可能的 cookies 文件
+cookies.txt
+*.cookies
+
+# 可能的用户数据
+userdata/
+user_data/
+
+# 可能的缓存目录
+.cache/
+__pycache__/
