@@ -217,7 +217,6 @@ jobs:
           path: |
             dist/dlsite_downloader.exe
             build_info.txt
-            README.md
           retention-days: 30
 
       - name: 创建发布版本
@@ -226,7 +225,6 @@ jobs:
         with:
           files: |
             dist/dlsite_downloader.exe
-            README.md
           name: "${{ steps.version.outputs.version }}"
           tag_name: "${{ steps.version.outputs.version }}"
           body: |
