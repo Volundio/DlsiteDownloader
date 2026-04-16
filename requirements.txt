@@ -1,10 +1,4 @@
-# DLsite 下载器依赖包
-# 
-# 核心依赖
-dlsite-async[pil]>=0.8.2
+﻿dlsite-async[pil]>=0.10.0
 aiofiles>=23.0.0
-
-# 可选依赖（用于更好的兼容性）
 aiohttp>=3.8.0
 cryptography>=3.4.0
-

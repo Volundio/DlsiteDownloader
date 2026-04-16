@@ -21,7 +21,8 @@ if sys.platform.startswith('win'):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 try:
-    from dlsite_async import PlayAPI, EbookSession, EpubSession
+    from dlsite_async import PlayAPI, EbookSession, EpubFixedSession, EpubReflowableSession
+    from dlsite_async.exceptions import DlsiteError
 except ImportError:
     print("错误：请先安装依赖库", flush=True)
     print("运行命令：pip install -r requirements.txt", flush=True)
@@ -746,7 +747,8 @@ class DLsiteDownloader:
             from dlsite_async.play.models import PlayFile as _AsyncPlayFile
 
             ebook_files = []        # EbookSession 
-            epub_files  = []        # EpubSession 
+            epub_fixed_files  = []  # EpubFixedSession (固定版式)
+            epub_reflowable_files = [] # EpubReflowableSession (流式)
             legacy_page_files = []  # 多页图片合集 (download_playfile 遍历解扰)
             direct_files = []       # 单一图片、文档等 (download_playfile 直下)
 
@@ -755,9 +757,12 @@ class DLsiteDownloader:
                 if playfile.is_ebook:
                     ebook_files.append((filename, playfile))
                     self.logger.debug(f"{filename}  [type={ptype}] → EbookSession")
-                elif playfile.is_epub:
-                    epub_files.append((filename, playfile))
-                    self.logger.debug(f"{filename}  [type={ptype}] → EpubSession")
+                elif getattr(playfile, "is_epub_fixed", getattr(playfile, "is_epub", False)):
+                    epub_fixed_files.append((filename, playfile))
+                    self.logger.debug(f"{filename}  [type={ptype}] → EpubFixedSession")
+                elif getattr(playfile, "is_epub_reflowable", False):
+                    epub_reflowable_files.append((filename, playfile))
+                    self.logger.debug(f"{filename}  [type={ptype}] → EpubReflowableSession")
                 elif "page" in playfile.files and isinstance(playfile.files["page"], list):
                     legacy_page_files.append((filename, playfile))
                     self.logger.debug(f"{filename}  [type={ptype}, pages={len(playfile.files['page'])}] → Legacy Pages")
@@ -771,7 +776,7 @@ class DLsiteDownloader:
                     self.logger.warning(f"无法处理的文件格式: {filename} (无 page 也无 optimized)")
 
             self.logger.info(
-                f"分类: ebook={len(ebook_files)}, epub={len(epub_files)}, "
+                f"分类: ebook={len(ebook_files)}, epub_fixed={len(epub_fixed_files)}, epub_reflow={len(epub_reflowable_files)}, "
                 f"legacy_pages={len(legacy_page_files)}, direct={len(direct_files)}"
             )
 
@@ -787,8 +792,10 @@ class DLsiteDownloader:
             print(f"文件分析结果（共 {len(all_files)} 个）：")
             if ebook_files:
                 print(f"  Ebook 文件：{len(ebook_files)} 个")
-            if epub_files:
-                print(f"  EPUB 文件：{len(epub_files)} 个")
+            if epub_fixed_files:
+                print(f"  EPUB文件 (固定版式)：{len(epub_fixed_files)} 个")
+            if epub_reflowable_files:
+                print(f"  EPUB文件 (流式)：{len(epub_reflowable_files)} 个")
             if legacy_page_files:
                 print(f"  在线阅览画集/漫画 (多页)：{len(legacy_page_files)} 个")
             if direct_files:
@@ -840,17 +847,17 @@ class DLsiteDownloader:
                         self.logger.error(f"EbookSession 失败：{filename} - {e}")
                         print(f"    ✗ 下载失败：{e}")
 
-            # ─── 2. EPUB 类型（EpubSession） ─────────────────────────────
-            if epub_files:
-                print(f"\n[EPUB] 处理 {len(epub_files)} 个文件...")
-                for file_idx, (filename, playfile) in enumerate(epub_files, 1):
-                    print(f"  [{file_idx}/{len(epub_files)}] {filename}")
+            # ─── 2a. EPUB 固定版式（EpubFixedSession） ───────────────────
+            if epub_fixed_files:
+                print(f"\n[EPUB固定] 处理 {len(epub_fixed_files)} 个文件...")
+                for file_idx, (filename, playfile) in enumerate(epub_fixed_files, 1):
+                    print(f"  [{file_idx}/{len(epub_fixed_files)}] {filename}")
                     epub_dir = os.path.join(
                         download_dir,
-                        f"epub_{os.path.splitext(os.path.basename(filename))[0]}"
+                        f"epub_fixed_{os.path.splitext(os.path.basename(filename))[0]}"
                     )
                     try:
-                        async with EpubSession(self.play_api, tree, playfile) as epub:
+                        async with EpubFixedSession(self.play_api, tree, playfile) as epub:
                             page_count = epub.page_count
                             print(f"    页数：{page_count}")
                             for page_num in range(page_count):
@@ -865,7 +872,24 @@ class DLsiteDownloader:
                             print(f"    ✓ 完成 {page_count} 页")
                             downloaded_count += 1
                     except Exception as e:
-                        self.logger.error(f"EpubSession 失败：{filename} - {e}")
+                        self.logger.error(f"EpubFixedSession 失败：{filename} - {e}")
+                        print(f"    ✗ 下载失败：{e}")
+
+            # ─── 2b. EPUB 流式版式（EpubReflowableSession） ──────────────
+            if epub_reflowable_files:
+                print(f"\n[EPUB流式] 处理 {len(epub_reflowable_files)} 个文件...")
+                for file_idx, (filename, playfile) in enumerate(epub_reflowable_files, 1):
+                    print(f"  [{file_idx}/{len(epub_reflowable_files)}] {filename}")
+                    epub_dir = os.path.join(download_dir, "epub_reflowable")
+                    try:
+                        async with EpubReflowableSession(self.play_api, tree, playfile) as epub:
+                            print("    下载并提取流式 EPUB 文件...", end="\r")
+                            # 流式 epub 支持直接下载完整文件结构
+                            await epub.download_epub(epub_dir, mkdir=True, force=True)
+                            print(f"    ✓ 下载提取完成" + " "*10)
+                            downloaded_count += 1
+                    except Exception as e:
+                        self.logger.error(f"EpubReflowableSession 失败：{filename} - {e}")
                         print(f"    ✗ 下载失败：{e}")
 
             # ─── 3. Legacy Page Files (处理多页在线画集/漫画) ───────────
