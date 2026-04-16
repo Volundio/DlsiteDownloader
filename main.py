@@ -623,35 +623,29 @@ class DLsiteDownloader:
                 print(f"\n请选择操作：")
                 print(f"  输入作品序号 (1-{len(self.book_works)}) 下载作品")
                 print(f"  输入 0 退出程序")
-                print(f"  输入 'clear' 清除所有保存的登录信息")
-                print(f"  输入 'clear credentials' 仅清除账号密码")
-                print(f"  输入 'clear session' 仅清除会话信息")
-                print(f"  输入 'search 关键词' 搜索作品")
+                print(f"  输入 'c' (clear) 清除所有保存的登录信息")
+                print(f"  输入 's 关键词' 搜索作品")
                 if self.search_mode:
-                    print(f"  输入 'reset' 退出搜索模式")
+                    print(f"  输入 'q' (quit) 退出搜索模式")
                 
                 
                 choice = input("请选择：").strip().lower()
                 
                 if choice == "0":
                     return ("exit", 0)
-                elif choice == 'clear':
+                elif choice in ['c', 'clear']:
                     self.clear_saved_data()
                     continue
-                elif choice == 'clear credentials':
-                    self.clear_saved_data(clear_credentials=True, clear_session=False)
-                    continue
-                elif choice == 'clear session':
-                    self.clear_saved_data(clear_credentials=False, clear_session=True)
-                    continue
-                elif choice == 'reset' and self.search_mode:
+                elif choice in ['q', 'quit', 'reset'] and self.search_mode:
                     return ("reset_search", 0)
-                elif choice.startswith('search '):
-                    keyword = choice[7:].strip()
+                elif choice.startswith('s ') or choice.startswith('search '):
+                    # 获取关键词部分
+                    keyword_parts = choice.split(' ', 1)
+                    keyword = keyword_parts[1].strip() if len(keyword_parts) > 1 else ""
                     if keyword:
                         return ("search", keyword)
                     else:
-                        print("请输入搜索关键词，例如：search 关键词")
+                        print("请输入搜索关键词，例如：s 关键词")
                         continue
                 elif choice in ['next', 'n'] and page_info["has_next"]:
                     return ("next_page", page_info["current_page"] + 1)
@@ -912,10 +906,14 @@ class DLsiteDownloader:
                                 files=page_info,
                                 hashname=playfile.hashname
                             )
-                            dest = os.path.join(page_dir, f"{page_num + 1:04d}.jpg")
+                            # 从原始文件名中提取正确的后缀（比如服务端可能是 .webp，强转 .jpg 会导致 Pillow keep 报错）
+                            orig_name = page_info.get("optimized", {}).get("name", "")
+                            ext = os.path.splitext(orig_name)[1] if orig_name else ".webp"
+                            # 如果无法获取后缀且强行用 .jpg 可能会错，所以兜底使用 .webp
+                            dest = os.path.join(page_dir, f"{page_num + 1:04d}{ext}")
                             await self.play_api.download_playfile(
                                 token, mock_pf, dest,
-                                mkdir=True, force=True, descramble=True
+                                mkdir=True, force=True, descramble=True, quality=100
                             )
                         print(f"    ✓ 完成 {len(pages)} 页" + " "*10)
                         downloaded_count += 1
@@ -941,7 +939,7 @@ class DLsiteDownloader:
                     dest = os.path.join(dest_dir, filename)
                     try:
                         await self.play_api.download_playfile(
-                            token, playfile, dest, mkdir=True, force=True, descramble=True
+                            token, playfile, dest, mkdir=True, force=True, descramble=True, quality=100
                         )
                         self.logger.debug(f"单一文件下载完成：{filename}")
                         downloaded_count += 1
