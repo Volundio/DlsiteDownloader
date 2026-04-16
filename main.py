@@ -21,7 +21,7 @@ if sys.platform.startswith('win'):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 try:
-    from dlsite_async import PlayAPI, EbookSession
+    from dlsite_async import PlayAPI, EbookSession, EpubSession
 except ImportError:
     print("错误：请先安装依赖库", flush=True)
     print("运行命令：pip install -r requirements.txt", flush=True)
@@ -691,7 +691,14 @@ class DLsiteDownloader:
                 print("请重新输入")
     
     async def download_work(self, work_index: int) -> bool:
-        """下载指定的作品"""
+        """下载指定的作品
+        
+        支持以下 PlayFile 类型：
+          - ebook_fixed / ebook_webtoon / voicecomic_v2 → EbookSession（含音频）
+          - epub                                        → EpubSession（含解扰）
+          - image                                       → download_playfile（含解扰）
+          - pdf / 其他                                  → download_playfile（直接下载）
+        """
         work, _ = self.book_works[work_index]
         product_id = work.product_id
         work_name = work.work_name
@@ -727,334 +734,205 @@ class DLsiteDownloader:
                 self.logger.warning(f"作品 {product_id} 没有找到任何文件")
                 return False
             
-            # 详细分析每个文件
-            self.logger.debug("开始详细分析每个文件:")
-            for idx, (filename, playfile) in enumerate(all_files):
-                self.logger.debug(f"文件 {idx+1}: {filename}")
-                self.logger.debug(f"  - 文件类型: {type(playfile).__name__}")
-                self.logger.debug(f"  - is_ebook 属性: {getattr(playfile, 'is_ebook', 'N/A')}")
-                self.logger.debug(f"  - 文件扩展名: {os.path.splitext(filename)[1].lower()}")
-                
-                # 检查更多属性
-                for attr in ['url', 'size', 'encrypted', 'scrambled', 'type', 'content_type', 'mime_type']:
-                    if hasattr(playfile, attr):
-                        self.logger.debug(f"  - {attr}: {getattr(playfile, attr)}")
-                
-                # 列出所有可用属性
-                all_attrs = [attr for attr in dir(playfile) if not attr.startswith('_')]
-                self.logger.debug(f"  - 所有属性: {all_attrs}")
-            
-            # 分类文件类型
-            ebook_files = []
-            cpd_files = []
-            pdf_files = []
-            other_files = []
-            potentially_scrambled_images = []
-            
+            # ─── 基于 playfile.type 及内部数据的精确分类 ─────────────────────────
+            # playfile.type 由 dlsite-async 库从服务端 JSON 直接赋值。
+            # 分类规则：
+            # 1. Ebook Viewer: is_ebook == True
+            # 2. Epub Viewer: is_epub == True
+            # 3. Legacy Viewer (多页型): playfile.files 包含 "page" 数组。
+            #    (常见于 DLsite 在线可完整阅览的 pdf 或 image 画集。此时无法直接获取原始文件。)
+            # 4. Legacy Viewer (单文件/直接文件): playfile.files 包含 "optimized"
+            # 5. 其他无法下载的残存属性文件。
+            from dlsite_async.play.models import PlayFile as _AsyncPlayFile
+
+            ebook_files = []        # EbookSession 
+            epub_files  = []        # EpubSession 
+            legacy_page_files = []  # 多页图片合集 (download_playfile 遍历解扰)
+            direct_files = []       # 单一图片、文档等 (download_playfile 直下)
+
             for filename, playfile in all_files:
-                is_ebook = getattr(playfile, 'is_ebook', False)
-                file_ext = filename.lower()
-                
-                if is_ebook:
+                ptype = playfile.type
+                if playfile.is_ebook:
                     ebook_files.append((filename, playfile))
-                    self.logger.debug(f"{filename} 识别为电子书文件")
-                elif file_ext.endswith('.cpd'):
-                    cpd_files.append((filename, playfile))
-                    self.logger.debug(f"{filename} 识别为 CPD 文件")
-                elif file_ext.endswith('.pdf'):
-                    pdf_files.append((filename, playfile))
-                    self.logger.debug(f"{filename} 识别为 PDF 文件")
-                elif file_ext.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    # 检查是否可能是需要解密的图片
-                    is_scrambled = getattr(playfile, 'scrambled', False) or getattr(playfile, 'encrypted', False)
-                    has_descramble = hasattr(playfile, 'descramble')
-                    
-                    # 对于漫画作品，如果是按页命名的图片文件，很可能需要解密
-                    is_likely_comic_page = (
-                        # 数字开头的文件名
-                        filename.lower().startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) and
-                        # 包含位置标识符
-                        any(keyword in filename.lower() for keyword in ['left', 'right', 'center', '_'])
+                    self.logger.debug(f"{filename}  [type={ptype}] → EbookSession")
+                elif playfile.is_epub:
+                    epub_files.append((filename, playfile))
+                    self.logger.debug(f"{filename}  [type={ptype}] → EpubSession")
+                elif "page" in playfile.files and isinstance(playfile.files["page"], list):
+                    legacy_page_files.append((filename, playfile))
+                    self.logger.debug(f"{filename}  [type={ptype}, pages={len(playfile.files['page'])}] → Legacy Pages")
+                elif "optimized" in playfile.files:
+                    direct_files.append((filename, playfile))
+                    has_crypt = bool(playfile.files.get("optimized", {}).get("crypt"))
+                    self.logger.debug(
+                        f"{filename}  [type={ptype}, crypt={has_crypt}] → download_playfile"
                     )
-                    
-                    # 额外检查：如果所有文件都是数字命名的图片，可能都需要解密
-                    is_numbered_pattern = len([f for f, _ in all_files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]) > 5
-                    is_numbered_file = filename.lower().startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9'))
-                    
-                    # 如果文件名看起来像页面序号，且作品有很多数字命名的图片文件
-                    is_potential_scrambled = is_numbered_pattern and is_numbered_file
-                    
-                    if is_scrambled or has_descramble or is_likely_comic_page or is_potential_scrambled:
-                        potentially_scrambled_images.append((filename, playfile))
-                        reason = []
-                        if is_scrambled: reason.append("标记为混淆")
-                        if has_descramble: reason.append("有解密方法")
-                        if is_likely_comic_page: reason.append("疑似漫画页面")
-                        if is_potential_scrambled: reason.append("数字命名模式")
-                        self.logger.debug(f"{filename} 可能需要解密处理 - 原因: {', '.join(reason)}")
-                    else:
-                        other_files.append((filename, playfile))
-                        self.logger.debug(f"{filename} 识别为普通图片文件")
                 else:
-                    other_files.append((filename, playfile))
-                    self.logger.debug(f"{filename} 识别为其他文件")
-            
-            self.logger.info(f"文件分类结果: 电子书={len(ebook_files)}, CPD={len(cpd_files)}, PDF={len(pdf_files)}, 可能需解密图片={len(potentially_scrambled_images)}, 其他={len(other_files)}")
-            
-            # 显示文件分析
-            print(f"文件分析结果（共 {len(all_files)} 个文件）：")
+                    self.logger.warning(f"无法处理的文件格式: {filename} (无 page 也无 optimized)")
+
+            self.logger.info(
+                f"分类: ebook={len(ebook_files)}, epub={len(epub_files)}, "
+                f"legacy_pages={len(legacy_page_files)}, direct={len(direct_files)}"
+            )
+
+            # ─── 显示文件列表 ────────────────────────────────────────────
+            type_label = {
+                "ebook_fixed":    "Ebook (固定版式)",
+                "ebook_webtoon":  "Ebook (条漫)",
+                "voicecomic_v2":  "Ebook (有声漫画)",
+                "epub":           "EPUB",
+                "image":          "图片",
+                "pdf":            "PDF"
+            }
+            print(f"文件分析结果（共 {len(all_files)} 个）：")
             if ebook_files:
-                print(f"  电子书文件：{len(ebook_files)} 个")
-            if cpd_files:
-                print(f"  CypherGuard PDF：{len(cpd_files)} 个")
-            if pdf_files:
-                print(f"  PDF 文件：{len(pdf_files)} 个")
-            if potentially_scrambled_images:
-                print(f"  需解密图片：{len(potentially_scrambled_images)} 个")
-            if other_files:
-                print(f"  其他文件：{len(other_files)} 个")
-            
+                print(f"  Ebook 文件：{len(ebook_files)} 个")
+            if epub_files:
+                print(f"  EPUB 文件：{len(epub_files)} 个")
+            if legacy_page_files:
+                print(f"  在线阅览画集/漫画 (多页)：{len(legacy_page_files)} 个")
+            if direct_files:
+                print(f"  直接下载文件：{len(direct_files)} 个")
+
             print("\n完整文件列表：")
             for filename, playfile in all_files:
-                is_ebook = getattr(playfile, 'is_ebook', False)
-                file_ext = filename.lower()
-                
-                if is_ebook:
-                    file_type = "电子书"
-                elif file_ext.endswith('.cpd'):
-                    file_type = "CPD"
-                elif file_ext.endswith('.pdf'):
-                    file_type = "PDF"
-                elif file_ext.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    is_scrambled = getattr(playfile, 'scrambled', False) or getattr(playfile, 'encrypted', False)
-                    if is_scrambled or hasattr(playfile, 'descramble'):
-                        file_type = "需解密图片"
-                    else:
-                        file_type = "普通图片"
-                else:
-                    file_type = "其他"
-                    
-                print(f"  - {filename} ({file_type})")
-            
+                label = type_label.get(playfile.type, playfile.type)
+                if "page" in playfile.files:
+                    label += f"（多页合集: {len(playfile.files['page'])} 页）"
+                elif playfile.files.get("optimized", {}).get("crypt"):
+                    label += "（加密）"
+                print(f"  - {filename} [{label}]")
+
             print(f"\n是否下载所有 {len(all_files)} 个文件？")
             choice = input("输入 y 继续下载，输入 n 取消：").strip().lower()
             if choice not in ['y', 'yes', '是']:
                 print("已取消下载")
                 return False
-            
+
             print(f"\n开始下载 {len(all_files)} 个文件...")
             downloaded_count = 0
-            
-            # 优先处理电子书文件（需要特殊解密）
+
+            # ─── 1. Ebook 类型（EbookSession） ───────────────────────────
             if ebook_files:
-                print(f"\n处理 {len(ebook_files)} 个电子书文件...")
+                print(f"\n[Ebook] 处理 {len(ebook_files)} 个文件...")
                 for file_idx, (filename, playfile) in enumerate(ebook_files, 1):
-                    print(f"[电子书 {file_idx}/{len(ebook_files)}] 处理：{filename}")
-                    
+                    label = type_label.get(playfile.type, playfile.type)
+                    print(f"  [{file_idx}/{len(ebook_files)}] {filename}  ({label})")
+                    ebook_dir = os.path.join(
+                        download_dir,
+                        f"ebook_{os.path.splitext(os.path.basename(filename))[0]}"
+                    )
                     try:
-                        # 创建文件专用目录
-                        ebook_dir = os.path.join(download_dir, f"ebook_{os.path.splitext(filename)[0]}")
-                        
                         async with EbookSession(self.play_api, tree, playfile) as ebook:
-                            print(f"  页数：{ebook.page_count}")
-                            
-                            # 下载所有页面
-                            for page_num in range(ebook.page_count):
-                                print(f"  下载页面 {page_num + 1}/{ebook.page_count}...", end="\r")
-                                try:
-                                    # 尝试使用新版本的 API
-                                    await ebook.download_page(page_num, ebook_dir, mkdir=True, force=True)
-                                except TypeError:
-                                    # 如果失败，尝试不带 descramble 参数
-                                    await ebook.download_page(page_num, ebook_dir, mkdir=True)
-                                except Exception as e:
-                                    # 如果还是失败，尝试最基本的调用
-                                    try:
-                                        await ebook.download_page(page_num, ebook_dir)
-                                    except Exception:
-                                        print(f"\n  页面 {page_num + 1} 下载失败: {str(e)}")
-                                        continue
-                            print(f"  完成 {ebook.page_count} 页下载")
+                            page_count = ebook.page_count
+                            print(f"    页数：{page_count}")
+                            for page_num in range(page_count):
+                                print(
+                                    f"    下载页面 {page_num + 1}/{page_count}...",
+                                    end="\r"
+                                )
+                                await ebook.download_page(
+                                    page_num, ebook_dir, mkdir=True, force=True
+                                )
+                            print(f"    ✓ 完成 {page_count} 页")
                             downloaded_count += 1
                     except Exception as e:
-                        print(f"  电子书下载失败：{filename} - {str(e)}")
-                        # 如果电子书下载失败，尝试直接下载原始文件
-                        print(f"  尝试直接下载原始文件：{filename}")
-                        file_path = os.path.join(download_dir, filename)
-                        try:
-                            await self.play_api.download_playfile(token, playfile, file_path, mkdir=True)
-                            print(f"  原始文件下载完成：{filename}")
-                            downloaded_count += 1
-                        except Exception as e2:
-                            print(f"  原始文件下载也失败：{filename} - {str(e2)}")
-                            # 最后尝试直接 HTTP 下载
-                            try:
-                                if hasattr(playfile, 'url') and playfile.url:
-                                    async with self.play_api.session.get(playfile.url) as response:
-                                        if response.status == 200:
-                                            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                                            with open(file_path, 'wb') as f:
-                                                async for chunk in response.content.iter_chunked(8192):
-                                                    f.write(chunk)
-                                            print(f"  HTTP 直接下载完成：{filename}")
-                                            downloaded_count += 1
-                                        else:
-                                            print(f"  HTTP 错误：{filename} (状态码: {response.status})")
-                                else:
-                                    print(f"  无可用下载 URL：{filename}")
-                            except Exception as e3:
-                                print(f"  所有下载方法都失败：{filename} - {str(e3)}")
-            
-            # 处理可能需要解密的图片文件
-            if potentially_scrambled_images:
-                print(f"\n处理 {len(potentially_scrambled_images)} 个可能需要解密的图片文件...")
-                for file_idx, (filename, playfile) in enumerate(potentially_scrambled_images, 1):
-                    print(f"[解密图片 {file_idx}/{len(potentially_scrambled_images)}] 处理：{filename}")
-                    self.logger.info(f"尝试解密图片：{filename}")
-                    
+                        self.logger.error(f"EbookSession 失败：{filename} - {e}")
+                        print(f"    ✗ 下载失败：{e}")
+
+            # ─── 2. EPUB 类型（EpubSession） ─────────────────────────────
+            if epub_files:
+                print(f"\n[EPUB] 处理 {len(epub_files)} 个文件...")
+                for file_idx, (filename, playfile) in enumerate(epub_files, 1):
+                    print(f"  [{file_idx}/{len(epub_files)}] {filename}")
+                    epub_dir = os.path.join(
+                        download_dir,
+                        f"epub_{os.path.splitext(os.path.basename(filename))[0]}"
+                    )
                     try:
-                        # 方法1：尝试使用 PlayAPI 的解密方法
-                        decrypt_success = False
-                        try:
-                            # 创建解密图片目录
-                            img_dir = os.path.join(download_dir, "decrypted_images")
-                            os.makedirs(img_dir, exist_ok=True)
-                            
-                            # 尝试使用 PlayAPI 的 download_playfile 方法进行解密下载
-                            decrypted_path = os.path.join(img_dir, filename)
-                            
-                            # 检查 playfile 的类型
-                            playfile_type = getattr(playfile, 'type', 'unknown')
-                            self.logger.debug(f"{filename} playfile 类型: {playfile_type}")
-                            
-                            # 使用 download_playfile 方法，它应该能自动处理解密
-                            # 添加解密相关参数
-                            try:
-                                # 尝试带解密参数的下载
-                                await self.play_api.download_playfile(token, playfile, decrypted_path, mkdir=True, descramble=True)
-                                self.logger.debug(f"使用 descramble=True 下载 {filename}")
-                            except TypeError:
-                                # 如果不支持 descramble 参数，使用标准方法
-                                await self.play_api.download_playfile(token, playfile, decrypted_path, mkdir=True)
-                                self.logger.debug(f"使用标准方法下载 {filename}")
-                            
-                            # 检查文件是否已下载并且有合理大小
-                            if os.path.exists(decrypted_path):
-                                file_size = os.path.getsize(decrypted_path)
-                                self.logger.debug(f"{filename} 下载文件大小: {file_size} bytes")
-                                
-                                if file_size > 1000:
-                                    print(f"  解密下载完成：{filename} ({file_size/1024:.1f}KB)")
-                                    downloaded_count += 1
-                                    decrypt_success = True
-                                else:
-                                    raise Exception(f"下载的文件过小: {file_size} bytes")
-                            else:
-                                raise Exception("文件未创建")
-                                
-                        except Exception as decrypt_error:
-                            self.logger.debug(f"PlayAPI 解密下载失败：{str(decrypt_error)}")
-                            
-                            # 方法1.5：尝试 EbookSession（作为备用）
-                            try:
-                                async with EbookSession(self.play_api, tree, playfile) as ebook:
-                                    if ebook.page_count > 0:
-                                        self.logger.debug(f"将 {filename} 作为单页电子书处理，页数：{ebook.page_count}")
-                                        for page_num in range(ebook.page_count):
-                                            try:
-                                                await ebook.download_page(page_num, img_dir, mkdir=True, force=True)
-                                            except TypeError:
-                                                await ebook.download_page(page_num, img_dir, mkdir=True)
-                                            except Exception:
-                                                await ebook.download_page(page_num, img_dir)
-                                        print(f"  电子书解密完成：{filename} ({ebook.page_count} 页)")
-                                        downloaded_count += 1
-                                        decrypt_success = True
-                                    else:
-                                        raise Exception("页数为0")
-                            except Exception as ebook_error:
-                                self.logger.debug(f"EbookSession 处理失败：{str(ebook_error)}")
-                        
-                        # 方法2：如果解密失败，尝试直接下载并提醒用户
-                        if not decrypt_success:
-                            try:
-                                file_path = os.path.join(download_dir, filename)
-                                await self.play_api.download_playfile(token, playfile, file_path, mkdir=True)
-                                print(f"  原始下载完成：{filename}")
-                                print(f"  警告：此图片可能需要手动解密")
-                                downloaded_count += 1
-                            except Exception as direct_error:
-                                self.logger.debug(f"直接下载也失败：{str(direct_error)}")
-                                # 方法3：最后尝试 HTTP 下载
-                                try:
-                                    if hasattr(playfile, 'url') and playfile.url:
-                                        async with self.play_api.session.get(playfile.url) as response:
-                                            if response.status == 200:
-                                                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                                                with open(file_path, 'wb') as f:
-                                                    async for chunk in response.content.iter_chunked(8192):
-                                                        f.write(chunk)
-                                                print(f"  HTTP 下载完成：{filename}")
-                                                print(f"  警告：此图片可能需要手动解密")
-                                                downloaded_count += 1
-                                            else:
-                                                raise Exception(f"HTTP 状态码: {response.status}")
-                                    else:
-                                        raise Exception("无可用 URL")
-                                except Exception as http_error:
-                                    self.logger.error(f"所有下载方法都失败：{str(http_error)}")
-                                    raise Exception(f"所有方法都失败: {str(http_error)}")
-                            
-                    except Exception as e:
-                        print(f"  图片处理失败：{filename} - {str(e)}")
-                        self.logger.error(f"图片处理失败：{filename} - {str(e)}")
-            
-            # 处理其他文件（直接下载）
-            other_download_files = cpd_files + pdf_files + other_files
-            if other_download_files:
-                print(f"\n处理 {len(other_download_files)} 个其他文件...")
-                for file_idx, (filename, playfile) in enumerate(other_download_files, 1):
-                    print(f"[文件 {file_idx}/{len(other_download_files)}] 下载：{filename}")
-                    
-                    file_path = os.path.join(download_dir, filename)
-                    try:
-                        # 方法1：尝试使用 PlayAPI 的标准下载方法
-                        try:
-                            await self.play_api.download_playfile(token, playfile, file_path, mkdir=True)
-                            print(f"  标准下载完成：{filename}")
+                        async with EpubSession(self.play_api, tree, playfile) as epub:
+                            page_count = epub.page_count
+                            print(f"    页数：{page_count}")
+                            for page_num in range(page_count):
+                                print(
+                                    f"    下载页面 {page_num + 1}/{page_count}...",
+                                    end="\r"
+                                )
+                                await epub.download_page(
+                                    page_num, epub_dir,
+                                    mkdir=True, descramble=True, force=True
+                                )
+                            print(f"    ✓ 完成 {page_count} 页")
                             downloaded_count += 1
-                        except Exception:
-                            # 方法2：如果标准方法失败，尝试直接 HTTP 下载
-                            if hasattr(playfile, 'url') and playfile.url:
-                                async with self.play_api.session.get(playfile.url) as response:
-                                    if response.status == 200:
-                                        # 确保目录存在
-                                        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                                        with open(file_path, 'wb') as f:
-                                            async for chunk in response.content.iter_chunked(8192):
-                                                f.write(chunk)
-                                        print(f"  直接下载完成：{filename}")
-                                        downloaded_count += 1
-                                    else:
-                                        print(f"  HTTP 错误：{filename} (状态码: {response.status})")
-                            else:
-                                print(f"  无有效 URL：{filename}")
                     except Exception as e:
-                        print(f"  下载失败：{filename} - {str(e)}")
-            
-            # 显示特殊文件的使用说明
-            if cpd_files:
-                print("\nCypherGuard for PDF 文件使用说明：")
-                print("  1. 下载并安装 CypherGuard for PDF 阅览器")
-                print("  2. 使用您的 DLsite 账号登录阅览器")
-                print("  3. 在阅览器中打开 .cpd 文件")
-            
+                        self.logger.error(f"EpubSession 失败：{filename} - {e}")
+                        print(f"    ✗ 下载失败：{e}")
+
+            # ─── 3. Legacy Page Files (处理多页在线画集/漫画) ───────────
+            if legacy_page_files:
+                print(f"\n[多页画集] 处理 {len(legacy_page_files)} 个在线画集文件...")
+                for file_idx, (filename, playfile) in enumerate(legacy_page_files, 1):
+                    pages = playfile.files.get("page", [])
+                    print(f"  [{file_idx}/{len(legacy_page_files)}] {filename} ({len(pages)} 页)")
+                    page_dir = os.path.join(
+                        download_dir,
+                        f"pages_{os.path.splitext(os.path.basename(filename))[0]}"
+                    )
+                    try:
+                        for page_num, page_info in enumerate(pages):
+                            print(f"    下载页面 {page_num + 1}/{len(pages)}...", end="\r")
+                            # 伪造一个 type="image" 的 PlayFile 激活 download_playfile 解扰
+                            mock_pf = _AsyncPlayFile(
+                                length=page_info.get("optimized", {}).get("length", 0),
+                                type="image", 
+                                files=page_info,
+                                hashname=playfile.hashname
+                            )
+                            dest = os.path.join(page_dir, f"{page_num + 1:04d}.jpg")
+                            await self.play_api.download_playfile(
+                                token, mock_pf, dest,
+                                mkdir=True, force=True, descramble=True
+                            )
+                        print(f"    ✓ 完成 {len(pages)} 页" + " "*10)
+                        downloaded_count += 1
+                    except Exception as e:
+                        self.logger.error(f"多页文件下载失败：{filename} - {e}")
+                        print(f"\n    ✗ 下载失败：{e}")
+
+            # ─── 4. 单一文件（直接下载） ─────────────────────────────────
+            if direct_files:
+                print(f"\n[单一文件] 下载 {len(direct_files)} 个文件...")
+                for file_idx, (filename, playfile) in enumerate(direct_files, 1):
+                    has_crypt = bool(playfile.files.get("optimized", {}).get("crypt"))
+                    crypt_tag = "加密" if has_crypt else "普通"
+                    print(
+                        f"  [{file_idx}/{len(direct_files)}] {filename} (type={playfile.type}, {crypt_tag})",
+                        end="\r"
+                    )
+                    if hasattr(playfile, "is_ebook") and not playfile.is_ebook and not playfile.is_epub and playfile.type == "image":
+                        dest_dir = os.path.join(download_dir, "images")
+                    else:
+                        dest_dir = download_dir
+                    
+                    dest = os.path.join(dest_dir, filename)
+                    try:
+                        await self.play_api.download_playfile(
+                            token, playfile, dest, mkdir=True, force=True, descramble=True
+                        )
+                        self.logger.debug(f"单一文件下载完成：{filename}")
+                        downloaded_count += 1
+                    except Exception as e:
+                        self.logger.error(f"单一下载失败：{filename} - {e}")
+                        print(f"\n    ✗ {filename} 下载失败：{e}")
+                print(f"    ✓ 完成 {len(direct_files)} 个单一下载文件" + " "*10)
+
             print(f"\n下载完成！成功下载 {downloaded_count}/{len(all_files)} 个文件")
             print(f"保存位置：{os.path.abspath(download_dir)}")
             return True
-            
+
         except Exception as e:
             print(f"下载失败：{str(e)}")
+            self.logger.error(f"download_work 异常：{str(e)}", exc_info=True)
             return False
     
     async def run(self):

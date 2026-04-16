@@ -183,3 +183,8 @@ user_data/
 # 可能的缓存目录
 .cache/
 __pycache__/
+
+debug_output_utf8.txt
+debug_output.txt
+scratch_debug.py
+scratch_test_legacy.py
